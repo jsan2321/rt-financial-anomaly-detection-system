@@ -1,0 +1,150 @@
+/**
+ * RT-FADS Design System Semantic Tokens
+ * Light-First Dual-Theme Implementation via CSS Custom Properties
+ */
+
+:root {
+  /* LIGHT THEME (DEFAULT) */
+  --color-background: #FAFBFC;
+  --color-surface: #FFFFFF;
+  --color-surface-elevated: #FFFFFF;
+  --color-surface-subtle: #F3F4F6;
+  
+  --color-text: #1A1D23;
+  --color-text-secondary: #4B5563;
+  --color-text-muted: #9CA3AF;
+  --color-text-inverse: #FFFFFF;
+  
+  --color-border: #E5E7EB;
+  --color-border-subtle: #F3F4F6;
+  
+  --color-primary: #0F766E;
+  --color-primary-hover: #115E59;
+  --color-primary-text: #FFFFFF;
+  
+  --color-success: #15803D;
+  --color-warning: #B45309;
+  --color-danger: #B91C1C;
+  --color-info: #0369A1;
+  
+  /* Semantic Risk Colors */
+  --color-risk-critical: #DC2626;
+  --color-risk-critical-bg: rgba(220, 38, 38, 0.1);
+  --color-risk-critical-border: rgba(220, 38, 38, 0.25);
+  
+  --color-risk-high: #EA580C;
+  --color-risk-high-bg: rgba(234, 88, 12, 0.1);
+  --color-risk-high-border: rgba(234, 88, 12, 0.25);
+  
+  --color-risk-medium: #CA8A04;
+  --color-risk-medium-bg: rgba(202, 138, 4, 0.1);
+  --color-risk-medium-border: rgba(202, 138, 4, 0.25);
+  
+  --color-risk-low: #2563EB;
+  --color-risk-low-bg: rgba(37, 99, 235, 0.1);
+  --color-risk-low-border: rgba(37, 99, 235, 0.25);
+  
+  --color-escalation: #7E22CE;
+  --color-escalation-bg: rgba(126, 34, 206, 0.1);
+  --color-escalation-border: rgba(126, 34, 206, 0.25);
+  
+  /* Navigation (SOC Inverted) */
+  --color-nav-bg: #111827;
+  --color-nav-surface: #1F2937;
+  --color-nav-text: #D1D5DB;
+  --color-nav-muted: #6B7280;
+  --color-nav-active: #FFFFFF;
+  --color-nav-border: #374151;
+  
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+
+  /* Typography */
+  --font-headline: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* 4px Spatial Grid System */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Shapes & Radii */
+  --radius-sm: 4px;
+  --radius-default: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+
+  /* Layout dimensions */
+  --sidebar-width: 240px;
+  --inspector-width: 380px;
+  --header-height: 56px;
+}
+
+[data-theme="dark"] {
+  /* DARK THEME */
+  --color-background: #07111F;
+  --color-surface: #12263A;
+  --color-surface-elevated: #1E3A5F;
+  --color-surface-subtle: #0D1B2A;
+  
+  --color-text: #D6E4F9;
+  --color-text-secondary: #94A3B8;
+  --color-text-muted: #64748B;
+  --color-text-inverse: #07111F;
+  
+  --color-border: #1E293B;
+  --color-border-subtle: #0F172A;
+  
+  --color-primary: #35D0BA;
+  --color-primary-hover: #5BEDD6;
+  --color-primary-text: #07111F;
+  
+  --color-success: #22C55E;
+  --color-warning: #F59E0B;
+  --color-danger: #EF4444;
+  --color-info: #38BDF8;
+  
+  /* Semantic Risk Colors (Dark) */
+  --color-risk-critical: #F87171;
+  --color-risk-critical-bg: rgba(248, 113, 113, 0.15);
+  --color-risk-critical-border: rgba(248, 113, 113, 0.3);
+  
+  --color-risk-high: #FB923C;
+  --color-risk-high-bg: rgba(251, 146, 60, 0.15);
+  --color-risk-high-border: rgba(251, 146, 60, 0.3);
+  
+  --color-risk-medium: #FBBF24;
+  --color-risk-medium-bg: rgba(251, 191, 36, 0.15);
+  --color-risk-medium-border: rgba(251, 191, 36, 0.3);
+  
+  --color-risk-low: #60A5FA;
+  --color-risk-low-bg: rgba(96, 165, 250, 0.15);
+  --color-risk-low-border: rgba(96, 165, 250, 0.3);
+  
+  --color-escalation: #A855F7;
+  --color-escalation-bg: rgba(168, 85, 247, 0.15);
+  --color-escalation-border: rgba(168, 85, 247, 0.3);
+  
+  /* Navigation */
+  --color-nav-bg: #040A12;
+  --color-nav-surface: #091322;
+  --color-nav-text: #94A3B8;
+  --color-nav-muted: #475569;
+  --color-nav-active: #E2E8F0;
+  --color-nav-border: #1E293B;
+  
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+}

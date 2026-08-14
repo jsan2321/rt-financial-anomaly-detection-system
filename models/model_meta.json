@@ -1,0 +1,50 @@
+{
+  "model_version": "1.0.0",
+  "min_score": -0.3178,
+  "max_score": 0.1288,
+  "feature_names": [
+    "amount",
+    "hour_of_day",
+    "country_risk_tier",
+    "merchant_category_code",
+    "user_rolling_count"
+  ],
+  "country_risk_tiers": {
+    "US": 0.1,
+    "CA": 0.1,
+    "GB": 0.1,
+    "DE": 0.1,
+    "FR": 0.1,
+    "AU": 0.1,
+    "JP": 0.1,
+    "SG": 0.1,
+    "BR": 0.4,
+    "IN": 0.4,
+    "MX": 0.4,
+    "ZA": 0.5,
+    "NG": 0.8,
+    "RU": 0.8,
+    "KP": 1.0,
+    "IR": 1.0,
+    "SY": 1.0
+  },
+  "merchant_category_map": {
+    "groceries": 0.1,
+    "supermarket": 0.1,
+    "pharmacy": 0.1,
+    "utilities": 0.1,
+    "retail": 0.2,
+    "restaurant": 0.2,
+    "travel": 0.4,
+    "electronics": 0.5,
+    "jewelry": 0.7,
+    "money_transfer": 0.8,
+    "crypto": 0.9,
+    "gambling": 0.95,
+    "weapons": 1.0
+  },
+  "training_sample_size": 10000,
+  "contamination": 0.05,
+  "n_estimators": 100,
+  "trained_at": "2026-08-14T05:35:28.766780+00:00"
+}

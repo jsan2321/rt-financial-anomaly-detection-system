@@ -49,9 +49,14 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_entry, default=str)
 
 
-def setup_logging(service_name: str, log_level: str = "INFO") -> None:
+def setup_logging(
+    service_name: str = "rt-fads",
+    log_level: str = "INFO",
+    level: Optional[str] = None,
+) -> None:
     """Configure root and application loggers to emit JSON to stdout."""
-    numeric_level = getattr(logging, log_level.upper(), logging.INFO)
+    effective_level = level if level is not None else log_level
+    numeric_level = getattr(logging, effective_level.upper(), logging.INFO)
     root_logger = logging.getLogger()
     root_logger.setLevel(numeric_level)
 

@@ -1,7 +1,4 @@
-"""
-Main entry point for RT-FADS FastAPI Gateway service.
-"""
-
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -10,6 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+import redis.asyncio as aioredis
 from sqlalchemy.exc import SQLAlchemyError
 
 from shared.context.correlation import get_correlation_id
@@ -20,7 +18,9 @@ from shared.logging.json_logger import get_json_logger, setup_json_logging
 
 from .api import api_v1_router, health_router
 from .config import settings
+from .consumers.notification_forwarder import NotificationForwarder, RedisPubSubListener
 from .middleware.correlation import CorrelationIdMiddleware
+from .ws import ws_manager, ws_router
 
 logger = get_json_logger(__name__)
 
@@ -39,10 +39,57 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         max_overflow=settings.DB_MAX_OVERFLOW,
     )
 
+    # Initialize async Redis client
+    redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    app.state.redis = redis_client
+
+    shutdown_event = asyncio.Event()
+    app.state.shutdown_event = shutdown_event
+
+    forwarder = NotificationForwarder(config=settings)
+    pubsub_listener = RedisPubSubListener(config=settings)
+
+    # Launch background tasks
+    forwarder_task = asyncio.create_task(
+        forwarder.run_consumer_loop(redis_client=redis_client, shutdown_event=shutdown_event)
+    )
+    autoclaim_task = asyncio.create_task(
+        forwarder.run_autoclaim_loop(redis_client=redis_client, shutdown_event=shutdown_event)
+    )
+    pubsub_task = asyncio.create_task(
+        pubsub_listener.run_listener_loop(
+            redis_client=redis_client,
+            ws_connection_manager=ws_manager,
+            shutdown_event=shutdown_event,
+        )
+    )
+    heartbeat_task = asyncio.create_task(
+        ws_manager.run_heartbeat_loop(
+            shutdown_event=shutdown_event,
+            ping_interval=settings.WS_PING_INTERVAL_SECONDS,
+            ping_timeout=settings.WS_PING_TIMEOUT_SECONDS,
+        )
+    )
+
+    background_tasks = [forwarder_task, autoclaim_task, pubsub_task, heartbeat_task]
+
     yield
 
     logger.info("Shutting down RT-FADS Gateway service")
+    shutdown_event.set()
+
+    # Cancel background tasks
+    for task in background_tasks:
+        task.cancel()
+    await asyncio.gather(*background_tasks, return_exceptions=True)
+
+    # Close active WebSockets
+    await ws_manager.close_all()
+
+    # Close Redis & DB connections
+    await redis_client.aclose()
     await db_manager.close()
+    logger.info("RT-FADS Gateway shutdown complete")
 
 
 def create_app() -> FastAPI:
@@ -118,8 +165,10 @@ def create_app() -> FastAPI:
     # Mount routers
     app.include_router(health_router)
     app.include_router(api_v1_router)
+    app.include_router(ws_router)
 
     return app
 
 
 app = create_app()
+

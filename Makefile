@@ -1,4 +1,4 @@
-.PHONY: help up down restart logs ps clean health seed simulate test lint
+.PHONY: help up down restart logs ps clean health seed simulate train-model test lint
 
 # Default target
 help:
@@ -6,21 +6,22 @@ help:
 	@echo " RT-FADS — Real-Time Financial Anomaly Detection System CLI"
 	@echo "========================================================================"
 	@echo " Infrastructure Management:"
-	@echo "   make up        - Start backing infrastructure (Postgres, Redis, Jaeger, OTel)"
-	@echo "   make down      - Stop infrastructure containers"
-	@echo "   make restart   - Restart all containers"
-	@echo "   make ps        - List container status and health"
-	@echo "   make logs      - Follow container logs"
-	@echo "   make clean     - Teardown containers and wipe persistent volumes"
-	@echo "   make health    - Verify healthcheck status of all backing services"
-	@echo "   make migrate   - Execute Alembic and Django database migrations"
-	@echo "   make verify-db - Run schema and hypertable integrity verification"
+	@echo "   make up          - Start backing infrastructure (Postgres, Redis, Jaeger, OTel)"
+	@echo "   make down        - Stop infrastructure containers"
+	@echo "   make restart     - Restart all containers"
+	@echo "   make ps          - List container status and health"
+	@echo "   make logs        - Follow container logs"
+	@echo "   make clean       - Teardown containers and wipe persistent volumes"
+	@echo "   make health      - Verify healthcheck status of all backing services"
+	@echo "   make migrate     - Execute Alembic and Django database migrations"
+	@echo "   make verify-db   - Run schema and hypertable integrity verification"
 	@echo ""
-	@echo " Operations & Simulation (Phase 14+):"
-	@echo "   make seed      - Execute manual database seeding script"
-	@echo "   make simulate  - Launch live transaction simulator process"
-	@echo "   make test      - Run comprehensive test suite"
-	@echo "   make lint      - Run code quality linters"
+	@echo " Operations, Simulation & ML Training (Phase 14+):"
+	@echo "   make seed        - Execute manual database seeding script"
+	@echo "   make simulate    - Launch live transaction simulator process"
+	@echo "   make train-model - Train offline Isolation Forest ML anomaly model"
+	@echo "   make test        - Run comprehensive test suite"
+	@echo "   make lint        - Run code quality linters"
 	@echo "========================================================================"
 
 up:
@@ -61,10 +62,14 @@ verify-db:
 	python scripts/verify_migrations.py
 
 seed:
-	@echo "Seed target will execute 'python scripts/seed_data.py' (Implemented in Phase 14)"
+	python scripts/seed_data.py
+
 
 simulate:
-	@echo "Simulate target will execute 'python scripts/simulate_live.py' (Implemented in Phase 15)"
+	python scripts/simulate_live.py
+
+train-model:
+	python scripts/train_model.py
 
 test:
 	@echo "Running tests with pytest..."
