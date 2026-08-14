@@ -1,0 +1,216 @@
+# RT-FADS — Real-Time Financial Anomaly Detection System
+
+An event-driven microservices platform simulating high-throughput fraud surveillance for financial transactions, featuring a hybrid machine learning and rules engine, transactional outbox messaging, distributed tracing, and a real-time command-and-control dashboard.
+
+---
+
+## Architecture Overview
+
+RT-FADS is built as an event-driven distributed system composed of 7 runtime services, two durable backing stores, and an observability pipeline.
+
+```mermaid
+flowchart TB
+    React["React 19 Dashboard\n(Vite + TypeScript)"]
+    GW["API Gateway (FastAPI)\nREST + WebSocket"]
+    PG[("PostgreSQL 17 /\nTimescaleDB")]
+    Redis[("Redis 7.4+ / Valkey 8\nStreams + Pub/Sub")]
+    PROC["Processor\nRules + Isolation Forest\nEscalation Scheduler"]
+    OBP["Outbox Publisher"]
+    DJ["Django Admin 5 + DRF\nControl Plane"]
+    OTEL["OTel Collector"]
+    JAEGER["Jaeger v2 (OTel-native UI)"]
+
+    React -- "REST API" --> GW
+    React -- "WebSocket" --> GW
+    GW -- "Atomic Insert\nTransaction + Outbox" --> PG
+    GW -- "Consume stream:alerts,\nstream:escalations" --> Redis
+    GW -- "Publish ws:notifications" --> Redis
+    Redis -- "ws:notifications" --> GW
+    PROC -- "Consume stream:transactions,\nstream:compensation" --> Redis
+    PROC -- "Read Rules (cached)\nWrite Alert / RiskProfile / Outbox" --> PG
+    OBP -- "Poll PENDING Outbox (SKIP LOCKED)" --> PG
+    OBP -- "XADD Stream" --> Redis
+    DJ -- "Manage Rules & Users\nAudit Views" --> PG
+
+    GW -.trace.-> OTEL
+    PROC -.trace.-> OTEL
+    OBP -.trace.-> OTEL
+    DJ -.trace.-> OTEL
+    OTEL --> JAEGER
+```
+
+---
+
+## Key Distributed Systems & Reliability Patterns
+
+### 1. Transactional Outbox Pattern (Dual-Write Prevention)
+To eliminate dual-write inconsistencies between PostgreSQL and Redis Streams, all state mutations (transaction submission, alert creation, alert resolution, escalation, and risk compensation) write business data and an `OutboxEvent` row within a **single atomic database transaction**. A dedicated, stateless **Outbox Publisher** relays pending events to Redis Streams using `SELECT ... FOR UPDATE SKIP LOCKED` and handles exponential backoff retries and Dead-Letter Queueing (DLQ).
+
+```mermaid
+flowchart LR
+    T["Business Action\n(e.g., Ingest Transaction)"] --> DBT["Atomic DB Transaction:\nBusiness Row + OutboxEvent(PENDING)"]
+    DBT --> POLL["Outbox Publisher\n(FOR UPDATE SKIP LOCKED)"]
+    POLL --> PUB["XADD to Redis Stream"]
+    PUB -->|Success| MARK["Mark PUBLISHED"]
+    PUB -->|Failure| RETRY["Retry with Backoff"]
+    RETRY -->|Max Retries| DLQ["DeadLetterEvent Table\n+ *.dlq Stream"]
+```
+
+### 2. Idempotent Event Consumers (Inbox Pattern)
+All stream consumers (Processor, Notification Forwarder, Compensation Worker) are idempotent. Before applying any business effect, consumers check the `ProcessedEvent` table keyed on `event_id`. The business effect and the inbox record commit in the same transaction before acknowledging (`XACK`), guaranteeing correctness under at-least-once delivery and `XAUTOCLAIM` crash recovery.
+
+### 3. Hybrid Anomaly Detection Pipeline
+- **Deterministic Fraud Rules**: Configurable rule engine (`AMOUNT_THRESHOLD`, `HIGH_RISK_COUNTRY`, `VELOCITY` over TimescaleDB hypertable time-windows, `USER_RISK_LEVEL`, `MERCHANT_CATEGORY`) cached with TTL.
+- **Unsupervised ML Model**: Pre-trained scikit-learn `IsolationForest` generating normalized anomaly scores `[0.0, 1.0]` over fixed feature vectors.
+- **Composite Risk Scoring**: Weighted decision formula `(w_rule * rule_score + w_ml * ml_score + w_profile * user_risk)`. Alerts trigger if composite score $\ge 0.6$ or any rule has `CRITICAL` severity.
+- **Isolated `DEMO_MODE`**: Demonstration overrides are isolated behind a single `DemoOverrideStrategy` pattern, preventing demo flags from contaminating core business logic.
+
+### 4. Alert Resolution & Escalation State Machine
+Alerts transition through non-terminal escalation states (`PENDING → ESCALATED_EMAIL → ESCALATED_SLACK`) via a background scheduler or resolve into terminal states (`APPROVED`, `BLOCKED`, `FALSE_POSITIVE`). Race conditions between concurrent analyst actions and the escalation scheduler are resolved via conditional updates (`UPDATE ... WHERE status = :expected`).
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> ESCALATED_EMAIL: Timer (no analyst action)
+    ESCALATED_EMAIL --> ESCALATED_SLACK: Timer (still unresolved)
+    PENDING --> APPROVED: Analyst
+    PENDING --> BLOCKED: Analyst
+    PENDING --> FALSE_POSITIVE: Analyst (Triggers Compensation)
+    ESCALATED_EMAIL --> APPROVED: Analyst
+    ESCALATED_EMAIL --> BLOCKED: Analyst
+    ESCALATED_EMAIL --> FALSE_POSITIVE: Analyst
+    ESCALATED_SLACK --> APPROVED: Analyst
+    ESCALATED_SLACK --> BLOCKED: Analyst
+    ESCALATED_SLACK --> FALSE_POSITIVE: Analyst
+    APPROVED --> [*]
+    BLOCKED --> [*]
+    FALSE_POSITIVE --> [*]
+```
+
+### 5. Real-Time WebSockets & REST Reconciliation
+- **Redis Pub/Sub** is used strictly for ephemeral local fan-out (`ws:notifications`) to connected WebSocket clients.
+- On reconnect, clients execute REST reconciliation (`GET /alerts?status=PENDING...`) to synchronize state missed during network disconnects.
+
+---
+
+## Tech Stack
+
+| Domain | Technologies |
+|---|---|
+| **API Gateway** | Python 3.13+, FastAPI, Starlette, Pydantic v2, Uvicorn, SQLAlchemy (Async) |
+| **Processor Worker** | Python 3.13+, FastAPI, scikit-learn (`IsolationForest`), NumPy, Redis-py |
+| **Control Plane** | Python 3.13+, Django 5.2+, Django REST Framework (DRF), PostgreSQL ORM |
+| **Frontend Dashboard** | React 19, TypeScript, Vite, CSS Custom Property Design Tokens, TanStack Query |
+| **Databases & Messaging** | PostgreSQL 17 + TimescaleDB (Hypertables & Continuous Aggregates), Redis 7.4+ / Valkey 8 |
+| **Observability** | OpenTelemetry Python/JS SDKs, OTel Collector, Jaeger Distributed Tracing |
+| **Orchestration & Tools** | Docker Compose, Pytest, Faker, Alembic |
+
+---
+
+## Directory Structure
+
+```
+rt-financial-anomaly-detection-system/
+├── frontend/                     # React 19 + TypeScript + Vite Dashboard
+├── services/
+│   ├── gateway/                  # FastAPI Gateway (Ingestion, WebSockets, Auth)
+│   ├── processor/                # Detection Worker (Rules, ML, Escalation Scheduler)
+│   ├── outbox_publisher/         # Outbox Polling & Redis Stream Relay Worker
+│   └── admin/                    # Django Admin 5 + DRF Control Plane
+├── shared/                       # Shared Python packages (Models, Event Envelope, Context)
+├── infrastructure/               # otel-collector-config.yaml, Dockerfiles
+├── scripts/                      # seed_data.py, simulate_live.py, train_model.py
+├── tests/                        # Unit, Integration, API Contract, E2E & Race Condition tests
+├── models/                       # ML model artifacts (model.pkl, model_meta.json)
+├── docker-compose.yml            # Docker Compose orchestration (Postgres, Redis, Jaeger, OTel)
+├── .env.example                  # Environment configuration template
+├── Makefile                      # Developer automation commands
+├── README.md
+└── .gitignore
+```
+
+---
+
+## Developer Workflow
+
+### 1. Environment & Virtualenv Setup
+```bash
+# 1. Copy environment template
+cp .env.example .env
+
+# 2. Create and activate dedicated virtual environment
+python -m venv .venv
+
+# On Windows PowerShell:
+.\.venv\Scripts\Activate.ps1
+# On Linux / macOS:
+# source .venv/bin/activate
+
+# 3. Install backend dependencies
+pip install -r requirements.txt
+```
+
+### 2. Clean Local Startup
+The system guarantees a clean startup with **zero** initial transactions, users, or alerts:
+
+```bash
+# Start all backing infrastructure (Postgres, Redis, Jaeger, OTel Collector)
+docker compose up -d
+# or: make up
+```
+
+### 3. Run Database Migrations & Verification
+```bash
+# Execute Django and Alembic migrations
+python services/admin/manage.py migrate
+cd services/gateway && alembic upgrade head && cd ../..
+# or: make migrate
+
+# Verify schema integrity, TimescaleDB hypertable, and clean startup constraints
+python scripts/verify_migrations.py
+# or: make verify-db
+```
+
+### 4. Manual Data Seeding
+Seeding is strictly manual and never executes automatically during container boot:
+
+```bash
+# Seeds ≥100 users, ≥1,000 historical transactions, and deterministic demo scenarios
+make seed
+# or: python scripts/seed_data.py
+```
+
+### 5. Live Traffic Simulator
+Simulate live financial transactions against the running Gateway API:
+
+```bash
+# Submits jittered transactions (every 3–5 seconds) to POST /transactions
+make simulate
+# or: python scripts/simulate_live.py --interval-min 3 --interval-max 5
+```
+
+---
+
+## API Summary (`/api/v1`)
+
+| Method | Endpoint | Auth | Purpose |
+|---|---|---|---|
+| `POST` | `/transactions` | API Key | Ingest transaction asynchronously with idempotency |
+| `GET` | `/transactions/{id}` | API Key / JWT | Check transaction processing status |
+| `GET` | `/alerts` | JWT | List and filter alerts by severity, status, date |
+| `GET` | `/alerts/{id}` | JWT | Fetch alert detail with complete ML/rule explanations |
+| `POST` | `/alerts/{id}/approve` | JWT | Resolve alert as legitimate |
+| `POST` | `/alerts/{id}/block` | JWT | Resolve alert as confirmed fraud |
+| `POST` | `/alerts/{id}/false-positive` | JWT | Resolve alert as false-positive & trigger risk compensation |
+| `GET` | `/dashboard/summary` | JWT | Aggregate statistics & continuous aggregate chart data |
+| `WS` | `/ws/alerts` | JWT (query/subprotocol) | Real-time push stream for alert updates and escalations |
+| `GET` | `/healthz` / `/readyz` | None | Liveness and readiness probes |
+
+---
+
+## Observability & Distributed Tracing
+
+Every ingested transaction is assigned a `correlation_id` (UUIDv4) that propagates across HTTP headers, database records, Redis event payloads, log lines, and OpenTelemetry trace spans. 
+
+Traces can be inspected end-to-end in **Jaeger v2 (OTel-native UI)** (`http://localhost:16686`) covering:
+$$\text{Gateway Ingestion} \rightarrow \text{Outbox Relay} \rightarrow \text{Processor Detection} \rightarrow \text{Alert Creation} \rightarrow \text{Notification Fan-out} \rightarrow \text{WebSocket Broadcast}$$
