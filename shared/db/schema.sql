@@ -1,7 +1,7 @@
 -- ==============================================================================
 -- RT-FADS Authoritative PostgreSQL & TimescaleDB Physical Schema
 -- Real-Time Financial Anomaly Detection System
--- Reference DDL conforming to SRS §3.3, §6.2, §6.4 and ADR-006
+-- Reference DDL
 -- ==============================================================================
 
 -- 1. Required Extensions
