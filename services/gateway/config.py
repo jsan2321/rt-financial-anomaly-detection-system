@@ -51,6 +51,14 @@ class GatewaySettings(BaseSettings):
     JWT_ALGORITHM: str = Field(default="HS256")
     RATE_LIMIT_PER_MINUTE: int = Field(default=100, ge=1)
 
+    # Telemetry & Observability
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = Field(
+        default="http://localhost:4317",
+        description="OpenTelemetry Collector gRPC/HTTP endpoint",
+    )
+    OTEL_ENABLED: bool = Field(default=True)
+    METRICS_ENABLED: bool = Field(default=True)
+
 
 settings = GatewaySettings()
 

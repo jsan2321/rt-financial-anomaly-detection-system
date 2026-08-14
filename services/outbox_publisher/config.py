@@ -39,5 +39,14 @@ class OutboxPublisherSettings(BaseSettings):
     BACKOFF_BASE_SECONDS: float = Field(default=1.0, ge=0.1)
     BACKOFF_MAX_SECONDS: float = Field(default=60.0, ge=1.0)
 
+    # Telemetry & Observability
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = Field(
+        default="http://localhost:4317",
+        description="OpenTelemetry Collector gRPC/HTTP endpoint",
+    )
+    OTEL_ENABLED: bool = Field(default=True)
+    OUTBOX_METRICS_HOST: str = Field(default="0.0.0.0")
+    OUTBOX_METRICS_PORT: int = Field(default=8003)
+
 
 settings = OutboxPublisherSettings()

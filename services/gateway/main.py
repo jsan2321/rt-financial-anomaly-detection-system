@@ -15,6 +15,7 @@ from shared.db.session import get_session_manager
 from shared.errors.envelope import create_error_envelope
 from shared.errors.exceptions import RTFADSError
 from shared.logging.json_logger import get_json_logger, setup_json_logging
+from shared.telemetry.tracer import init_tracer, shutdown_tracer
 
 from .api import api_v1_router, health_router
 from .config import settings
@@ -29,6 +30,12 @@ logger = get_json_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manages service startup and graceful shutdown."""
     setup_json_logging(level=settings.LOG_LEVEL, service_name=settings.APP_NAME)
+    init_tracer(
+        service_name=settings.APP_NAME,
+        otlp_endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT,
+        enabled=settings.OTEL_ENABLED,
+        environment=settings.ENVIRONMENT,
+    )
     logger.info("Starting RT-FADS Gateway service", extra={"environment": settings.ENVIRONMENT})
 
     # Initialize async database engine
@@ -89,6 +96,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Close Redis & DB connections
     await redis_client.aclose()
     await db_manager.close()
+    shutdown_tracer()
     logger.info("RT-FADS Gateway shutdown complete")
 
 

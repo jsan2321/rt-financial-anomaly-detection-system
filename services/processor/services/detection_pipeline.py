@@ -2,6 +2,7 @@
 Detection pipeline orchestrator for RT-FADS Processor service.
 Coordinates velocity lookups, risk profiles, rule evaluation, ML scoring,
 composite decision generation, atomic DB updates, and outbox event creation.
+Instrumented with OpenTelemetry distributed trace spans and Prometheus metrics (NFR-OBS-002, NFR-OBS-004).
 """
 
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,12 @@ from shared.events.event_types import DEFAULT_EVENT_VERSION, EVENT_ALERT_CREATED
 from shared.logging.json_logger import get_json_logger
 from shared.models import Alert, OutboxEvent, ProcessedEvent, RiskProfile, Transaction
 from shared.models.enums import AlertStatus, OutboxStatus, TransactionStatus
+from shared.telemetry import (
+    alerts_created_total,
+    inject_trace_context,
+    processing_latency_seconds,
+    trace_span,
+)
 
 from ..domain.composite_scoring import compute_detection_decision
 from ..domain.demo_strategy import DemoOverrideStrategy, NullDemoStrategy
@@ -175,129 +182,168 @@ class DetectionPipeline:
         )
 
         # 3. Deterministic Rules Evaluation
-        active_rules = await self.rule_cache.get_active_rules(session)
-        rule_matches = evaluate_rules(
-            rules=active_rules,
-            transaction=txn_ctx,
-            velocity=velocity_ctx,
-            risk_profile=risk_snapshot,
-        )
+        with trace_span(
+            "processor.evaluate_rules",
+            attributes={
+                "transaction_id": str(txn_ctx.id),
+                "user_id": str(txn_ctx.user_id),
+            },
+        ):
+            active_rules = await self.rule_cache.get_active_rules(session)
+            rule_matches = evaluate_rules(
+                rules=active_rules,
+                transaction=txn_ctx,
+                velocity=velocity_ctx,
+                risk_profile=risk_snapshot,
+            )
 
         # 4. ML Anomaly Scoring
-        ml_score = self.ml_detector.score(
-            transaction=txn_ctx,
-            velocity=velocity_ctx,
-        )
+        with trace_span(
+            "processor.ml_inference",
+            attributes={
+                "transaction_id": str(txn_ctx.id),
+                "user_id": str(txn_ctx.user_id),
+            },
+        ):
+            with processing_latency_seconds.time(stage="ml_inference"):
+                ml_score = self.ml_detector.score(
+                    transaction=txn_ctx,
+                    velocity=velocity_ctx,
+                )
 
         # 5. Composite Risk Decision
-        decision = compute_detection_decision(
-            transaction=txn_ctx,
-            rule_matches=rule_matches,
-            ml_score=ml_score,
-            risk_profile=risk_snapshot,
-            weights=self.scoring_weights,
-        )
+        with trace_span(
+            "processor.composite_scoring",
+            attributes={
+                "transaction_id": str(txn_ctx.id),
+                "ml_score": float(ml_score),
+            },
+        ):
+            decision = compute_detection_decision(
+                transaction=txn_ctx,
+                rule_matches=rule_matches,
+                ml_score=ml_score,
+                risk_profile=risk_snapshot,
+                weights=self.scoring_weights,
+            )
 
-        # 6. Apply DEMO_MODE Strategy Override
-        final_decision = self.demo_strategy.override(
-            transaction=txn_ctx,
-            decision=decision,
-        )
+            # 6. Apply DEMO_MODE Strategy Override
+            final_decision = self.demo_strategy.override(
+                transaction=txn_ctx,
+                decision=decision,
+            )
 
         now = datetime.now(timezone.utc)
 
         # 7. Atomic DB Modifications (Single Transaction)
-        # 7a. Update Transaction Status to PROCESSED
-        update_txn_stmt = (
-            update(Transaction)
-            .where(
-                Transaction.id == txn_ctx.id,
-                Transaction.created_at == txn_ctx.created_at,
-            )
-            .values(
-                status=TransactionStatus.PROCESSED.value,
-                processed_at=now,
-            )
-        )
-        await session.execute(update_txn_stmt)
-
-        # 7b. If Alert triggered, create Alert + OutboxEvent + update RiskProfile
-        if final_decision.should_alert:
-            alert_id = uuid.uuid4()
-            rule_matches_json = [m.model_dump(mode="json") for m in final_decision.rule_matches]
-
-            alert = Alert(
-                id=alert_id,
-                transaction_id=txn_ctx.id,
-                user_id=txn_ctx.user_id,
-                status=AlertStatus.PENDING.value,
-                severity=final_decision.severity.value,
-                composite_risk_score=final_decision.composite_risk_score,
-                ml_anomaly_score=final_decision.ml_anomaly_score,
-                rule_matches=rule_matches_json,
-                risk_profile_snapshot=final_decision.risk_profile_snapshot,
-                is_demo=final_decision.is_demo,
-                correlation_id=corr_uuid,
-                created_at=now,
-            )
-            session.add(alert)
-
-            # Insert alert.created OutboxEvent
-            outbox_payload = {
-                "alert_id": str(alert_id),
+        with trace_span(
+            "processor.db_write",
+            attributes={
                 "transaction_id": str(txn_ctx.id),
-                "user_id": str(txn_ctx.user_id),
-                "status": AlertStatus.PENDING.value,
+                "should_alert": final_decision.should_alert,
                 "severity": final_decision.severity.value,
-                "composite_risk_score": str(final_decision.composite_risk_score),
-                "ml_anomaly_score": str(final_decision.ml_anomaly_score),
-                "rule_matches": rule_matches_json,
-                "is_demo": final_decision.is_demo,
-                "explanation": final_decision.explanation,
-                "created_at": now.isoformat(),
-            }
-
-            outbox_event = OutboxEvent(
-                id=uuid.uuid4(),
-                event_type=EVENT_ALERT_CREATED,
-                event_version=DEFAULT_EVENT_VERSION,
-                payload=outbox_payload,
-                correlation_id=corr_uuid,
-                producer_service="processor",
-                status=OutboxStatus.PENDING.value,
-                retry_count=0,
-                created_at=now,
-            )
-            session.add(outbox_event)
-
-            # Upsert RiskProfile
-            profile_stmt = select(RiskProfile).where(RiskProfile.user_id == txn_ctx.user_id)
-            profile_res = await session.execute(profile_stmt)
-            existing_profile = profile_res.scalar_one_or_none()
-
-            if existing_profile:
-                existing_profile.total_alerts += 1
-                existing_profile.last_recalculated_at = now
-            else:
-                new_profile = RiskProfile(
-                    user_id=txn_ctx.user_id,
-                    risk_score=Decimal("0.0000"),
-                    total_alerts=1,
-                    false_positive_count=0,
-                    last_recalculated_at=now,
+            },
+        ):
+            with processing_latency_seconds.time(stage="db_commit"):
+                # 7a. Update Transaction Status to PROCESSED
+                update_txn_stmt = (
+                    update(Transaction)
+                    .where(
+                        Transaction.id == txn_ctx.id,
+                        Transaction.created_at == txn_ctx.created_at,
+                    )
+                    .values(
+                        status=TransactionStatus.PROCESSED.value,
+                        processed_at=now,
+                    )
                 )
-                session.add(new_profile)
+                await session.execute(update_txn_stmt)
 
-        # 7c. Record ProcessedEvent (Inbox Pattern)
-        processed_event = ProcessedEvent(
-            event_id=event_uuid,
-            consumer_group=self.consumer_group,
-            processed_at=now,
-        )
-        session.add(processed_event)
+                # 7b. If Alert triggered, create Alert + OutboxEvent + update RiskProfile
+                if final_decision.should_alert:
+                    alert_id = uuid.uuid4()
+                    rule_matches_json = [m.model_dump(mode="json") for m in final_decision.rule_matches]
 
-        # Commit transaction atomically
-        await session.commit()
+                    alert = Alert(
+                        id=alert_id,
+                        transaction_id=txn_ctx.id,
+                        user_id=txn_ctx.user_id,
+                        status=AlertStatus.PENDING.value,
+                        severity=final_decision.severity.value,
+                        composite_risk_score=final_decision.composite_risk_score,
+                        ml_anomaly_score=final_decision.ml_anomaly_score,
+                        rule_matches=rule_matches_json,
+                        risk_profile_snapshot=final_decision.risk_profile_snapshot,
+                        is_demo=final_decision.is_demo,
+                        correlation_id=corr_uuid,
+                        created_at=now,
+                    )
+                    session.add(alert)
+
+                    # Increment alerts metric (NFR-OBS-004)
+                    alerts_created_total.inc(severity=final_decision.severity.value)
+
+                    # Inject W3C trace context into outbox event payload
+                    trace_carrier: dict = {}
+                    inject_trace_context(trace_carrier)
+
+                    # Insert alert.created OutboxEvent
+                    outbox_payload = {
+                        "alert_id": str(alert_id),
+                        "transaction_id": str(txn_ctx.id),
+                        "user_id": str(txn_ctx.user_id),
+                        "status": AlertStatus.PENDING.value,
+                        "severity": final_decision.severity.value,
+                        "composite_risk_score": str(final_decision.composite_risk_score),
+                        "ml_anomaly_score": str(final_decision.ml_anomaly_score),
+                        "rule_matches": rule_matches_json,
+                        "is_demo": final_decision.is_demo,
+                        "explanation": final_decision.explanation,
+                        "created_at": now.isoformat(),
+                        "_trace_context": trace_carrier,
+                    }
+
+                    outbox_event = OutboxEvent(
+                        id=uuid.uuid4(),
+                        event_type=EVENT_ALERT_CREATED,
+                        event_version=DEFAULT_EVENT_VERSION,
+                        payload=outbox_payload,
+                        correlation_id=corr_uuid,
+                        producer_service="processor",
+                        status=OutboxStatus.PENDING.value,
+                        retry_count=0,
+                        created_at=now,
+                    )
+                    session.add(outbox_event)
+
+                    # Upsert RiskProfile
+                    profile_stmt = select(RiskProfile).where(RiskProfile.user_id == txn_ctx.user_id)
+                    profile_res = await session.execute(profile_stmt)
+                    existing_profile = profile_res.scalar_one_or_none()
+
+                    if existing_profile:
+                        existing_profile.total_alerts += 1
+                        existing_profile.last_recalculated_at = now
+                    else:
+                        new_profile = RiskProfile(
+                            user_id=txn_ctx.user_id,
+                            risk_score=Decimal("0.0000"),
+                            total_alerts=1,
+                            false_positive_count=0,
+                            last_recalculated_at=now,
+                        )
+                        session.add(new_profile)
+
+                # 7c. Record ProcessedEvent (Inbox Pattern)
+                processed_event = ProcessedEvent(
+                    event_id=event_uuid,
+                    consumer_group=self.consumer_group,
+                    processed_at=now,
+                )
+                session.add(processed_event)
+
+                # Commit transaction atomically
+                await session.commit()
 
         logger.info(
             "Transaction successfully processed by detection pipeline",

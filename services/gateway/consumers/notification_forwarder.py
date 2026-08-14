@@ -25,6 +25,7 @@ from shared.events.event_types import (
     STREAM_ESCALATIONS,
 )
 from shared.logging.json_logger import get_json_logger
+from shared.telemetry import extract_trace_context, sample_stream_backlog, trace_span
 
 from ..config import GatewaySettings, settings
 from ..ws.manager import WebSocketConnectionManager
@@ -161,34 +162,49 @@ class NotificationForwarder:
             await redis_client.xack(stream_name, self.settings.GROUP_GATEWAY_NOTIFY, message_id)
             return
 
-        notification = format_notification_message(envelope.event_type, envelope.payload)
+        parent_ctx = None
+        if isinstance(envelope.payload, dict) and "_trace_context" in envelope.payload:
+            parent_ctx = extract_trace_context(envelope.payload["_trace_context"])
+        elif "traceparent" in message_data:
+            parent_ctx = extract_trace_context(message_data)
 
+        with trace_span(
+            "gateway.forward_notification",
+            attributes={
+                "event_id": envelope.event_id,
+                "event_type": envelope.event_type,
+                "correlation_id": envelope.correlation_id,
+                "stream": stream_name,
+            },
+            parent_context=parent_ctx,
+        ):
+            notification = format_notification_message(envelope.event_type, envelope.payload)
 
-        if notification is not None:
-            notification_str = json.dumps(notification)
-            try:
-                await redis_client.publish(
-                    self.settings.PUBSUB_NOTIFICATIONS,
-                    notification_str,
-                )
-                logger.debug(
-                    f"Forwarded event {envelope.event_id} ({envelope.event_type}) to Pub/Sub {self.settings.PUBSUB_NOTIFICATIONS}",
-                    extra={
-                        "event_id": envelope.event_id,
-                        "event_type": envelope.event_type,
-                        "correlation_id": envelope.correlation_id,
-                    },
-                )
-            except Exception as pub_err:
-                logger.error(
-                    f"Failed to publish to Pub/Sub {self.settings.PUBSUB_NOTIFICATIONS}: {pub_err}",
-                    exc_info=True,
-                )
-                # Do not XACK on Redis communication failure; message will be redelivered
-                return
+            if notification is not None:
+                notification_str = json.dumps(notification)
+                try:
+                    await redis_client.publish(
+                        self.settings.PUBSUB_NOTIFICATIONS,
+                        notification_str,
+                    )
+                    logger.debug(
+                        f"Forwarded event {envelope.event_id} ({envelope.event_type}) to Pub/Sub {self.settings.PUBSUB_NOTIFICATIONS}",
+                        extra={
+                            "event_id": envelope.event_id,
+                            "event_type": envelope.event_type,
+                            "correlation_id": envelope.correlation_id,
+                        },
+                    )
+                except Exception as pub_err:
+                    logger.error(
+                        f"Failed to publish to Pub/Sub {self.settings.PUBSUB_NOTIFICATIONS}: {pub_err}",
+                        exc_info=True,
+                    )
+                    # Do not XACK on Redis communication failure; message will be redelivered
+                    return
 
-        # Acknowledge successful forwarding
-        await redis_client.xack(stream_name, self.settings.GROUP_GATEWAY_NOTIFY, message_id)
+            # Acknowledge successful forwarding
+            await redis_client.xack(stream_name, self.settings.GROUP_GATEWAY_NOTIFY, message_id)
 
     async def run_consumer_loop(
         self,
@@ -212,6 +228,14 @@ class NotificationForwarder:
 
         while not shutdown_event.is_set():
             try:
+                # Sample stream backlog lengths (NFR-OBS-005)
+                for s in self.streams:
+                    await sample_stream_backlog(
+                        redis_client=redis_client,
+                        stream_name=s,
+                        group_name=self.settings.GROUP_GATEWAY_NOTIFY,
+                    )
+
                 entries = await redis_client.xreadgroup(
                     groupname=self.settings.GROUP_GATEWAY_NOTIFY,
                     consumername=self.consumer_name,

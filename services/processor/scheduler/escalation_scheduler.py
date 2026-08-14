@@ -21,6 +21,7 @@ from shared.events.event_types import (
 from shared.logging.json_logger import get_json_logger
 from shared.models import Alert, AuditLog, OutboxEvent
 from shared.models.enums import AlertStatus, OutboxStatus
+from shared.telemetry import escalations_total, trace_span
 
 from ..config import ProcessorSettings, settings as default_settings
 
@@ -68,185 +69,188 @@ class EscalationScheduler:
         email_result = await session.execute(email_stmt)
         pending_alerts = email_result.scalars().all()
 
-        for alert in pending_alerts:
-            update_stmt = (
-                update(Alert)
-                .where(
-                    Alert.id == alert.id,
-                    Alert.status == AlertStatus.PENDING.value,
+        with trace_span("processor.escalation_tick"):
+            for alert in pending_alerts:
+                update_stmt = (
+                    update(Alert)
+                    .where(
+                        Alert.id == alert.id,
+                        Alert.status == AlertStatus.PENDING.value,
+                    )
+                    .values(
+                        status=AlertStatus.ESCALATED_EMAIL.value,
+                        escalated_email_at=now,
+                    )
+                    .returning(
+                        Alert.id,
+                        Alert.transaction_id,
+                        Alert.user_id,
+                        Alert.severity,
+                        Alert.composite_risk_score,
+                        Alert.correlation_id,
+                    )
                 )
-                .values(
-                    status=AlertStatus.ESCALATED_EMAIL.value,
-                    escalated_email_at=now,
+                upd_res = await session.execute(update_stmt)
+                updated_row = upd_res.fetchone()
+
+                if updated_row is None:
+                    # Lost race: an analyst resolved the alert or another tick handled it
+                    # Silent no-op
+                    continue
+
+                # 1a. Write AuditLog row
+                audit_log = AuditLog(
+                    id=uuid.uuid4(),
+                    actor="system:escalation_scheduler",
+                    action="alert.escalated_email",
+                    entity_type="Alert",
+                    entity_id=str(updated_row.id),
+                    before={"status": AlertStatus.PENDING.value},
+                    after={
+                        "status": AlertStatus.ESCALATED_EMAIL.value,
+                        "escalated_email_at": now.isoformat(),
+                    },
+                    correlation_id=updated_row.correlation_id,
+                    created_at=now,
                 )
-                .returning(
-                    Alert.id,
-                    Alert.transaction_id,
-                    Alert.user_id,
-                    Alert.severity,
-                    Alert.composite_risk_score,
-                    Alert.correlation_id,
-                )
-            )
-            upd_res = await session.execute(update_stmt)
-            updated_row = upd_res.fetchone()
+                session.add(audit_log)
 
-            if updated_row is None:
-                # Lost race: an analyst resolved the alert or another tick handled it
-                # Silent no-op
-                continue
-
-            # 1a. Write AuditLog row
-            audit_log = AuditLog(
-                id=uuid.uuid4(),
-                actor="system:escalation_scheduler",
-                action="alert.escalated_email",
-                entity_type="Alert",
-                entity_id=str(updated_row.id),
-                before={"status": AlertStatus.PENDING.value},
-                after={
-                    "status": AlertStatus.ESCALATED_EMAIL.value,
-                    "escalated_email_at": now.isoformat(),
-                },
-                correlation_id=updated_row.correlation_id,
-                created_at=now,
-            )
-            session.add(audit_log)
-
-            # 1b. Write escalation.email.requested OutboxEvent
-            outbox_payload = {
-                "alert_id": str(updated_row.id),
-                "transaction_id": str(updated_row.transaction_id),
-                "user_id": str(updated_row.user_id),
-                "status": AlertStatus.ESCALATED_EMAIL.value,
-                "severity": updated_row.severity,
-                "composite_risk_score": str(updated_row.composite_risk_score),
-                "escalation_type": "email",
-                "escalated_at": now.isoformat(),
-            }
-            outbox_event = OutboxEvent(
-                id=uuid.uuid4(),
-                event_type=EVENT_ESCALATION_EMAIL_REQUESTED,
-                event_version=DEFAULT_EVENT_VERSION,
-                payload=outbox_payload,
-                correlation_id=updated_row.correlation_id,
-                producer_service="processor",
-                status=OutboxStatus.PENDING.value,
-                retry_count=0,
-                created_at=now,
-            )
-            session.add(outbox_event)
-            email_escalated_count += 1
-
-            logger.info(
-                f"Escalated alert {updated_row.id} to ESCALATED_EMAIL",
-                extra={
+                # 1b. Write escalation.email.requested OutboxEvent
+                outbox_payload = {
                     "alert_id": str(updated_row.id),
+                    "transaction_id": str(updated_row.transaction_id),
+                    "user_id": str(updated_row.user_id),
                     "status": AlertStatus.ESCALATED_EMAIL.value,
-                    "correlation_id": str(updated_row.correlation_id),
-                },
-            )
+                    "severity": updated_row.severity,
+                    "composite_risk_score": str(updated_row.composite_risk_score),
+                    "escalation_type": "email",
+                    "escalated_at": now.isoformat(),
+                }
+                outbox_event = OutboxEvent(
+                    id=uuid.uuid4(),
+                    event_type=EVENT_ESCALATION_EMAIL_REQUESTED,
+                    event_version=DEFAULT_EVENT_VERSION,
+                    payload=outbox_payload,
+                    correlation_id=updated_row.correlation_id,
+                    producer_service="processor",
+                    status=OutboxStatus.PENDING.value,
+                    retry_count=0,
+                    created_at=now,
+                )
+                session.add(outbox_event)
+                email_escalated_count += 1
+                escalations_total.inc(level="email")
 
-        # ----------------------------------------------------------------------
-        # 2. Tier 2: ESCALATED_EMAIL -> ESCALATED_SLACK
-        # ----------------------------------------------------------------------
-        slack_cutoff = now - timedelta(minutes=self.settings.ESCALATION_SLACK_MINUTES)
-        slack_stmt = (
-            select(Alert)
-            .where(
-                Alert.status == AlertStatus.ESCALATED_EMAIL.value,
-                Alert.escalated_email_at <= slack_cutoff,
-            )
-            .order_by(Alert.escalated_email_at.asc())
-            .limit(self.settings.ESCALATION_BATCH_SIZE)
-            .with_for_update(skip_locked=True)
-        )
-        slack_result = await session.execute(slack_stmt)
-        email_alerts = slack_result.scalars().all()
+                logger.info(
+                    f"Escalated alert {updated_row.id} to ESCALATED_EMAIL",
+                    extra={
+                        "alert_id": str(updated_row.id),
+                        "status": AlertStatus.ESCALATED_EMAIL.value,
+                        "correlation_id": str(updated_row.correlation_id),
+                    },
+                )
 
-        for alert in email_alerts:
-            update_stmt = (
-                update(Alert)
+            # ----------------------------------------------------------------------
+            # 2. Tier 2: ESCALATED_EMAIL -> ESCALATED_SLACK
+            # ----------------------------------------------------------------------
+            slack_cutoff = now - timedelta(minutes=self.settings.ESCALATION_SLACK_MINUTES)
+            slack_stmt = (
+                select(Alert)
                 .where(
-                    Alert.id == alert.id,
                     Alert.status == AlertStatus.ESCALATED_EMAIL.value,
+                    Alert.escalated_email_at <= slack_cutoff,
                 )
-                .values(
-                    status=AlertStatus.ESCALATED_SLACK.value,
-                    escalated_slack_at=now,
+                .order_by(Alert.escalated_email_at.asc())
+                .limit(self.settings.ESCALATION_BATCH_SIZE)
+                .with_for_update(skip_locked=True)
+            )
+            slack_result = await session.execute(slack_stmt)
+            email_alerts = slack_result.scalars().all()
+
+            for alert in email_alerts:
+                update_stmt = (
+                    update(Alert)
+                    .where(
+                        Alert.id == alert.id,
+                        Alert.status == AlertStatus.ESCALATED_EMAIL.value,
+                    )
+                    .values(
+                        status=AlertStatus.ESCALATED_SLACK.value,
+                        escalated_slack_at=now,
+                    )
+                    .returning(
+                        Alert.id,
+                        Alert.transaction_id,
+                        Alert.user_id,
+                        Alert.severity,
+                        Alert.composite_risk_score,
+                        Alert.correlation_id,
+                    )
                 )
-                .returning(
-                    Alert.id,
-                    Alert.transaction_id,
-                    Alert.user_id,
-                    Alert.severity,
-                    Alert.composite_risk_score,
-                    Alert.correlation_id,
+                upd_res = await session.execute(update_stmt)
+                updated_row = upd_res.fetchone()
+
+                if updated_row is None:
+                    # Lost race: silent no-op
+                    continue
+
+                # 2a. Write AuditLog row
+                audit_log = AuditLog(
+                    id=uuid.uuid4(),
+                    actor="system:escalation_scheduler",
+                    action="alert.escalated_slack",
+                    entity_type="Alert",
+                    entity_id=str(updated_row.id),
+                    before={"status": AlertStatus.ESCALATED_EMAIL.value},
+                    after={
+                        "status": AlertStatus.ESCALATED_SLACK.value,
+                        "escalated_slack_at": now.isoformat(),
+                    },
+                    correlation_id=updated_row.correlation_id,
+                    created_at=now,
                 )
-            )
-            upd_res = await session.execute(update_stmt)
-            updated_row = upd_res.fetchone()
+                session.add(audit_log)
 
-            if updated_row is None:
-                # Lost race: silent no-op
-                continue
-
-            # 2a. Write AuditLog row
-            audit_log = AuditLog(
-                id=uuid.uuid4(),
-                actor="system:escalation_scheduler",
-                action="alert.escalated_slack",
-                entity_type="Alert",
-                entity_id=str(updated_row.id),
-                before={"status": AlertStatus.ESCALATED_EMAIL.value},
-                after={
-                    "status": AlertStatus.ESCALATED_SLACK.value,
-                    "escalated_slack_at": now.isoformat(),
-                },
-                correlation_id=updated_row.correlation_id,
-                created_at=now,
-            )
-            session.add(audit_log)
-
-            # 2b. Write escalation.slack.requested OutboxEvent
-            outbox_payload = {
-                "alert_id": str(updated_row.id),
-                "transaction_id": str(updated_row.transaction_id),
-                "user_id": str(updated_row.user_id),
-                "status": AlertStatus.ESCALATED_SLACK.value,
-                "severity": updated_row.severity,
-                "composite_risk_score": str(updated_row.composite_risk_score),
-                "escalation_type": "slack",
-                "escalated_at": now.isoformat(),
-            }
-            outbox_event = OutboxEvent(
-                id=uuid.uuid4(),
-                event_type=EVENT_ESCALATION_SLACK_REQUESTED,
-                event_version=DEFAULT_EVENT_VERSION,
-                payload=outbox_payload,
-                correlation_id=updated_row.correlation_id,
-                producer_service="processor",
-                status=OutboxStatus.PENDING.value,
-                retry_count=0,
-                created_at=now,
-            )
-            session.add(outbox_event)
-            slack_escalated_count += 1
-
-            logger.info(
-                f"Escalated alert {updated_row.id} to ESCALATED_SLACK",
-                extra={
+                # 2b. Write escalation.slack.requested OutboxEvent
+                outbox_payload = {
                     "alert_id": str(updated_row.id),
+                    "transaction_id": str(updated_row.transaction_id),
+                    "user_id": str(updated_row.user_id),
                     "status": AlertStatus.ESCALATED_SLACK.value,
-                    "correlation_id": str(updated_row.correlation_id),
-                },
-            )
+                    "severity": updated_row.severity,
+                    "composite_risk_score": str(updated_row.composite_risk_score),
+                    "escalation_type": "slack",
+                    "escalated_at": now.isoformat(),
+                }
+                outbox_event = OutboxEvent(
+                    id=uuid.uuid4(),
+                    event_type=EVENT_ESCALATION_SLACK_REQUESTED,
+                    event_version=DEFAULT_EVENT_VERSION,
+                    payload=outbox_payload,
+                    correlation_id=updated_row.correlation_id,
+                    producer_service="processor",
+                    status=OutboxStatus.PENDING.value,
+                    retry_count=0,
+                    created_at=now,
+                )
+                session.add(outbox_event)
+                slack_escalated_count += 1
+                escalations_total.inc(level="slack")
 
-        # Commit all transitions, audit records, and outbox events atomically
-        if email_escalated_count > 0 or slack_escalated_count > 0:
-            await session.commit()
+                logger.info(
+                    f"Escalated alert {updated_row.id} to ESCALATED_SLACK",
+                    extra={
+                        "alert_id": str(updated_row.id),
+                        "status": AlertStatus.ESCALATED_SLACK.value,
+                        "correlation_id": str(updated_row.correlation_id),
+                    },
+                )
 
-        return email_escalated_count, slack_escalated_count
+            # Commit all transitions, audit records, and outbox events atomically
+            if email_escalated_count > 0 or slack_escalated_count > 0:
+                await session.commit()
+
+            return email_escalated_count, slack_escalated_count
 
     async def run_scheduler_loop(
         self,

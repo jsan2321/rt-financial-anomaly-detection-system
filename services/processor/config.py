@@ -75,5 +75,14 @@ class ProcessorSettings(BaseSettings):
     ESCALATION_SLACK_MINUTES: float = Field(default=10.0, ge=0.0)
     ESCALATION_BATCH_SIZE: int = Field(default=50, ge=1)
 
+    # Telemetry & Observability
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = Field(
+        default="http://localhost:4317",
+        description="OpenTelemetry Collector gRPC/HTTP endpoint",
+    )
+    OTEL_ENABLED: bool = Field(default=True)
+    PROCESSOR_METRICS_HOST: str = Field(default="0.0.0.0")
+    PROCESSOR_METRICS_PORT: int = Field(default=8002)
+
 
 settings = ProcessorSettings()

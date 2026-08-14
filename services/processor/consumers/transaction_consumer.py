@@ -20,6 +20,15 @@ from shared.events.envelope import EventEnvelope
 from shared.events.event_types import STREAM_DLQ_PREFIX
 from shared.logging.json_logger import get_json_logger
 from shared.models import DeadLetterEvent, ProcessedEvent
+from shared.telemetry import (
+    extract_trace_context,
+    outbox_dead_lettered_total,
+    processing_failures_total,
+    processing_latency_seconds,
+    sample_stream_backlog,
+    trace_span,
+    transactions_processed_total,
+)
 
 from ..config import ProcessorSettings, settings as default_settings
 from ..services.detection_pipeline import DetectionPipeline
@@ -152,6 +161,7 @@ class TransactionConsumer:
         except Exception:
             pass
 
+        outbox_dead_lettered_total.inc(stream=stream_key)
         await redis_client.xack(stream_key, self.settings.GROUP_TRANSACTIONS, message_id)
 
     async def process_single_message(
@@ -164,7 +174,7 @@ class TransactionConsumer:
         delivery_count: int = 1,
     ) -> bool:
         """
-        Processes a single Redis stream message with inbox idempotency and post-commit XACK.
+        Processes a single Redis stream message with inbox idempotency, OpenTelemetry tracing, and post-commit XACK.
         """
         # 1. Check delivery threshold for poison pill prevention
         if delivery_count > self.settings.MAX_CONSUMER_DELIVERIES:
@@ -201,41 +211,63 @@ class TransactionConsumer:
             )
             return True
 
-        # 3. Idempotent processing in DB session
-        try:
-            async with db_manager.session_factory() as session:
-                # 3a. Inbox check (FR-EVT-007, §7.3)
-                if await self.is_event_processed(session, event_uuid):
-                    logger.info(
-                        "Duplicate event detected in inbox; skipping business logic and acknowledging",
+        # Extract parent trace context from envelope payload or stream fields
+        parent_ctx = None
+        if isinstance(envelope.payload, dict) and "_trace_context" in envelope.payload:
+            parent_ctx = extract_trace_context(envelope.payload["_trace_context"])
+        elif "traceparent" in fields:
+            parent_ctx = extract_trace_context(fields)
+
+        # 3. Idempotent processing in DB session with distributed trace span
+        with trace_span(
+            "processor.consume_transaction",
+            attributes={
+                "event_id": str(event_uuid),
+                "correlation_id": envelope.correlation_id,
+                "consumer_group": self.settings.GROUP_TRANSACTIONS,
+                "stream": stream_key,
+            },
+            parent_context=parent_ctx,
+        ):
+            with processing_latency_seconds.time(stage="pipeline_total"):
+                try:
+                    async with db_manager.session_factory() as session:
+                        # 3a. Inbox check (FR-EVT-007, §7.3)
+                        if await self.is_event_processed(session, event_uuid):
+                            logger.info(
+                                "Duplicate event detected in inbox; skipping business logic and acknowledging",
+                                extra={"event_id": str(event_uuid), "message_id": message_id},
+                            )
+                            transactions_processed_total.inc(status="duplicate_inbox")
+                            # Acknowledge immediately since already committed
+                            await redis_client.xack(stream_key, self.settings.GROUP_TRANSACTIONS, message_id)
+                            return True
+
+                        # 3b. Execute detection pipeline (commits DB transaction on success)
+                        await self.pipeline.process_transaction_event(
+                            session=session,
+                            event_envelope=envelope,
+                        )
+
+                    # 4. Acknowledge message ONLY AFTER DB commit succeeds (FR-EVT-009)
+                    await redis_client.xack(stream_key, self.settings.GROUP_TRANSACTIONS, message_id)
+                    transactions_processed_total.inc(status="completed")
+                    logger.debug(
+                        "Acknowledged stream message post-commit",
                         extra={"event_id": str(event_uuid), "message_id": message_id},
                     )
-                    # Acknowledge immediately since already committed
-                    await redis_client.xack(stream_key, self.settings.GROUP_TRANSACTIONS, message_id)
                     return True
 
-                # 3b. Execute detection pipeline (commits DB transaction on success)
-                await self.pipeline.process_transaction_event(
-                    session=session,
-                    event_envelope=envelope,
-                )
-
-            # 4. Acknowledge message ONLY AFTER DB commit succeeds (FR-EVT-009)
-            await redis_client.xack(stream_key, self.settings.GROUP_TRANSACTIONS, message_id)
-            logger.debug(
-                "Acknowledged stream message post-commit",
-                extra={"event_id": str(event_uuid), "message_id": message_id},
-            )
-            return True
-
-        except Exception as exc:
-            logger.error(
-                f"Error processing transaction event {event_uuid}: {exc}. Will not XACK.",
-                extra={"event_id": str(event_uuid), "message_id": message_id},
-                exc_info=True,
-            )
-            # Do NOT XACK: message remains pending for XAUTOCLAIM / retry
-            return False
+                except Exception as exc:
+                    processing_failures_total.inc(stage="pipeline")
+                    transactions_processed_total.inc(status="failed")
+                    logger.error(
+                        f"Error processing transaction event {event_uuid}: {exc}. Will not XACK.",
+                        extra={"event_id": str(event_uuid), "message_id": message_id},
+                        exc_info=True,
+                    )
+                    # Do NOT XACK: message remains pending for XAUTOCLAIM / retry
+                    return False
 
     async def run_autoclaim_loop(
         self,
@@ -322,6 +354,13 @@ class TransactionConsumer:
 
         while not shutdown_event.is_set():
             try:
+                # Sample stream backlog (NFR-OBS-005)
+                await sample_stream_backlog(
+                    redis_client=redis_client,
+                    stream_name=self.settings.STREAM_TRANSACTIONS,
+                    group_name=self.settings.GROUP_TRANSACTIONS,
+                )
+
                 streams_dict = {self.settings.STREAM_TRANSACTIONS: ">"}
                 entries = await redis_client.xreadgroup(
                     groupname=self.settings.GROUP_TRANSACTIONS,

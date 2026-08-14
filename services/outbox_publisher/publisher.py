@@ -1,6 +1,7 @@
 """
 Core Transactional Outbox Publisher worker.
 Polls PENDING outbox events with SKIP LOCKED and publishes to Redis Streams.
+Instrumented with OpenTelemetry distributed trace spans and Prometheus metrics (NFR-OBS-002, NFR-OBS-004).
 """
 
 import asyncio
@@ -24,6 +25,14 @@ from shared.events.event_types import (
 from shared.logging.json_logger import get_json_logger
 from shared.models import DeadLetterEvent, OutboxEvent
 from shared.models.enums import OutboxStatus
+from shared.telemetry import (
+    extract_trace_context,
+    inject_trace_context,
+    outbox_dead_lettered_total,
+    outbox_events_published_total,
+    sample_outbox_backlog,
+    trace_span,
+)
 
 from .config import OutboxPublisherSettings, settings as default_settings
 
@@ -83,29 +92,52 @@ class OutboxPublisher:
     ) -> str:
         """
         Wraps OutboxEvent in standard EventEnvelope and publishes via Redis XADD.
+        Extracts parent trace context and propagates trace carrier (NFR-OBS-002).
         Returns the Redis Stream message ID.
         """
-        envelope = EventEnvelope(
-            event_id=str(event.id),
-            correlation_id=str(event.correlation_id),
-            event_type=event.event_type,
-            event_version=event.event_version,
-            occurred_at=event.created_at,
-            producer_service=event.producer_service,
-            payload=event.payload,
-        )
+        parent_ctx = None
+        if isinstance(event.payload, dict) and "_trace_context" in event.payload:
+            parent_ctx = extract_trace_context(event.payload["_trace_context"])
 
-        stream_name = get_stream_for_event_type(event.event_type)
-
-        msg_id = await redis_client.xadd(
-            name=stream_name,
-            fields={
-                "event": envelope.to_json(),
+        with trace_span(
+            "outbox.publish_event",
+            attributes={
                 "event_id": str(event.id),
                 "event_type": event.event_type,
+                "correlation_id": str(event.correlation_id),
             },
-        )
-        return msg_id if isinstance(msg_id, str) else msg_id.decode("utf-8")
+            parent_context=parent_ctx,
+        ):
+            stream_name = get_stream_for_event_type(event.event_type)
+
+            # Ensure trace context is injected into envelope payload
+            payload_data = dict(event.payload) if isinstance(event.payload, dict) else {"data": event.payload}
+            if "_trace_context" not in payload_data:
+                carrier: dict = {}
+                inject_trace_context(carrier)
+                payload_data["_trace_context"] = carrier
+
+            envelope = EventEnvelope(
+                event_id=str(event.id),
+                correlation_id=str(event.correlation_id),
+                event_type=event.event_type,
+                event_version=event.event_version,
+                occurred_at=event.created_at,
+                producer_service=event.producer_service,
+                payload=payload_data,
+            )
+
+            msg_id = await redis_client.xadd(
+                name=stream_name,
+                fields={
+                    "event": envelope.to_json(),
+                    "event_id": str(event.id),
+                    "event_type": event.event_type,
+                },
+            )
+
+            outbox_events_published_total.inc(event_type=event.event_type)
+            return msg_id if isinstance(msg_id, str) else msg_id.decode("utf-8")
 
     def handle_publish_failure(
         self,
@@ -144,6 +176,7 @@ class OutboxPublisher:
                 created_at=datetime.now(timezone.utc),
             )
             session.add(dlq_event)
+            outbox_dead_lettered_total.inc(stream=stream_name)
         else:
             logger.warning(
                 f"Failed to publish OutboxEvent {event.id} ({event.event_type}) on attempt "
@@ -167,25 +200,26 @@ class OutboxPublisher:
         success_count = 0
         now = datetime.now(timezone.utc)
 
-        for event in events:
-            try:
-                msg_id = await self.publish_event(redis_client, event)
-                event.status = OutboxStatus.PUBLISHED.value
-                event.published_at = now
-                success_count += 1
-                logger.info(
-                    f"Published event {event.id} ({event.event_type}) to Redis stream",
-                    extra={
-                        "event_id": str(event.id),
-                        "event_type": event.event_type,
-                        "correlation_id": str(event.correlation_id),
-                        "stream_msg_id": msg_id,
-                    },
-                )
-            except Exception as exc:
-                self.handle_publish_failure(session, event, exc)
+        with trace_span("outbox.publish_batch", attributes={"batch_size": len(events)}):
+            for event in events:
+                try:
+                    msg_id = await self.publish_event(redis_client, event)
+                    event.status = OutboxStatus.PUBLISHED.value
+                    event.published_at = now
+                    success_count += 1
+                    logger.info(
+                        f"Published event {event.id} ({event.event_type}) to Redis stream",
+                        extra={
+                            "event_id": str(event.id),
+                            "event_type": event.event_type,
+                            "correlation_id": str(event.correlation_id),
+                            "stream_msg_id": msg_id,
+                        },
+                    )
+                except Exception as exc:
+                    self.handle_publish_failure(session, event, exc)
 
-        await session.commit()
+            await session.commit()
         return len(events)
 
     async def run_loop(
@@ -203,6 +237,8 @@ class OutboxPublisher:
         while not shutdown_event.is_set():
             try:
                 async with db_manager.session_factory() as session:
+                    # Sample outbox backlog gauge (NFR-OBS-005)
+                    await sample_outbox_backlog(session, service="outbox_publisher")
                     processed_count = await self.publish_batch(session, redis_client)
 
                 # If no events were pending, pause before next poll interval

@@ -131,3 +131,18 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Telemetry & Observability (NFR-OBS-001)
+OTEL_EXPORTER_OTLP_ENDPOINT = os.getenv('OTEL_EXPORTER_OTLP_ENDPOINT', 'http://localhost:4317')
+OTEL_ENABLED = os.getenv('OTEL_ENABLED', 'true').lower() == 'true'
+
+try:
+    from shared.telemetry.tracer import init_tracer
+    init_tracer(
+        service_name="rt-fads-admin",
+        otlp_endpoint=OTEL_EXPORTER_OTLP_ENDPOINT,
+        enabled=OTEL_ENABLED,
+    )
+except Exception:
+    pass
+

@@ -46,7 +46,9 @@ async def test_readyz_endpoint_healthy(test_client):
         mock_ping.return_value = True
         response = await test_client.get("/readyz")
         assert response.status_code == 200
-        assert response.json() == {"status": "ready", "database": "connected"}
+        data = response.json()
+        assert data["status"] == "ready"
+        assert data["dependencies"]["database"] == "connected"
 
 
 @pytest.mark.asyncio

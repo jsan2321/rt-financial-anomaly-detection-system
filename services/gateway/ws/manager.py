@@ -1,6 +1,7 @@
 """
 WebSocket Connection Manager for managing active client sessions, broadcasting
 notifications, and enforcing heartbeat ping/pong lifecycles.
+Instrumented with Prometheus metrics and OpenTelemetry tracing (NFR-OBS-004).
 """
 
 import asyncio
@@ -12,6 +13,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 from shared.logging.json_logger import get_json_logger
+from shared.telemetry import trace_span, websocket_connections_active
 
 logger = get_json_logger(__name__)
 
@@ -50,11 +52,14 @@ class WebSocketConnectionManager:
                 "last_pong": now,
                 "last_ping_sent": None,
             }
+            active_total = len(self._active_connections)
+
+        websocket_connections_active.set(active_total)
         logger.info(
             "WebSocket client connected",
             extra={
                 "client_id": client_id,
-                "active_connections": len(self._active_connections),
+                "active_connections": active_total,
             },
         )
 
@@ -64,13 +69,15 @@ class WebSocketConnectionManager:
         """
         async with self._lock:
             client_info = self._active_connections.pop(websocket, None)
+            active_total = len(self._active_connections)
 
+        websocket_connections_active.set(active_total)
         if client_info:
             logger.info(
                 "WebSocket client disconnected",
                 extra={
                     "client_id": client_info.get("client_id"),
-                    "active_connections": len(self._active_connections),
+                    "active_connections": active_total,
                 },
             )
 
@@ -122,24 +129,26 @@ class WebSocketConnectionManager:
         failed_sockets: List[WebSocket] = []
         delivered_count = 0
 
-        for ws in connections:
-            try:
-                if ws.client_state == WebSocketState.CONNECTED:
-                    await ws.send_text(payload)
-                    delivered_count += 1
-                else:
+        with trace_span("gateway.ws_broadcast", attributes={"client_count": len(connections)}):
+            for ws in connections:
+                try:
+                    if ws.client_state == WebSocketState.CONNECTED:
+                        await ws.send_text(payload)
+                        delivered_count += 1
+                    else:
+                        failed_sockets.append(ws)
+                except (WebSocketDisconnect, RuntimeError, Exception) as err:
+                    logger.debug(
+                        f"Error broadcasting to WebSocket client, removing socket: {err}",
+                        extra={"error": str(err)},
+                    )
                     failed_sockets.append(ws)
-            except (WebSocketDisconnect, RuntimeError, Exception) as err:
-                logger.debug(
-                    f"Error broadcasting to WebSocket client, removing socket: {err}",
-                    extra={"error": str(err)},
-                )
-                failed_sockets.append(ws)
 
-        if failed_sockets:
-            async with self._lock:
-                for ws in failed_sockets:
-                    self._active_connections.pop(ws, None)
+            if failed_sockets:
+                async with self._lock:
+                    for ws in failed_sockets:
+                        self._active_connections.pop(ws, None)
+                    websocket_connections_active.set(len(self._active_connections))
 
         return delivered_count
 
@@ -231,6 +240,7 @@ class WebSocketConnectionManager:
         async with self._lock:
             connections = list(self._active_connections.keys())
             self._active_connections.clear()
+            websocket_connections_active.set(0)
 
         for ws in connections:
             try:
