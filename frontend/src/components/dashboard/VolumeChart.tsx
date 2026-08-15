@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Activity } from 'lucide-react';
+import { Alert } from '../../types';
 
 interface DataPoint {
   time: string;
@@ -7,26 +8,43 @@ interface DataPoint {
   anomalies: number;
 }
 
-export const VolumeChart: React.FC = () => {
-  // Generate sample 5m continuous aggregate time-series
+interface VolumeChartProps {
+  alerts?: Alert[];
+}
+
+export const VolumeChart: React.FC<VolumeChartProps> = ({ alerts = [] }) => {
+  // Aggregate real alerts into 5m continuous aggregation windows
   const data: DataPoint[] = useMemo(() => {
     const points: DataPoint[] = [];
     const now = new Date();
+    // 24 buckets of 5 minutes = 2 hours trailing window
     for (let i = 24; i >= 0; i--) {
-      const d = new Date(now.getTime() - i * 5 * 60 * 1000);
-      const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      // Pseudo-random volume with periodic bursts
-      const baseVol = 120 + Math.sin(i / 3) * 45 + ((i * 7) % 35);
-      const isSpike = i === 4 || i === 12;
-      const anomalies = isSpike ? Math.floor(Math.random() * 4) + 2 : Math.random() > 0.7 ? 1 : 0;
+      const bucketEnd = new Date(now.getTime() - i * 5 * 60 * 1000);
+      const bucketStart = new Date(bucketEnd.getTime() - 5 * 60 * 1000);
+      const timeStr = bucketEnd.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      // Count actual alerts occurring in this 5m window
+      const matchedAlerts = alerts.filter((a) => {
+        try {
+          const alertTime = new Date(a.created_at).getTime();
+          return alertTime >= bucketStart.getTime() && alertTime <= bucketEnd.getTime();
+        } catch {
+          return false;
+        }
+      }).length;
+
+      // Deterministic synthetic baseline throughput curve
+      const bucketIndex = 24 - i;
+      const baseVol = 110 + Math.sin(bucketIndex / 3.5) * 40 + ((bucketIndex * 13) % 25);
+
       points.push({
         time: timeStr,
-        volume: Math.round(baseVol),
-        anomalies,
+        volume: Math.round(baseVol + matchedAlerts * 15),
+        anomalies: matchedAlerts,
       });
     }
     return points;
-  }, []);
+  }, [alerts]);
 
   const maxVolume = Math.max(...data.map((d) => d.volume), 200);
   const chartHeight = 160;

@@ -1,6 +1,5 @@
 """
 Thread-safe Prometheus-compatible metrics registry and metric instruments for RT-FADS.
-Conforms to SRS §10 (NFR-OBS-004, NFR-OBS-005) and docs/architecture/observability.md.
 """
 
 from collections import defaultdict
@@ -265,7 +264,7 @@ def get_metrics_registry() -> MetricsRegistry:
 
 
 # ==============================================================================
-# Master RT-FADS Metrics Catalog (SRS §10, NFR-OBS-004)
+# Master RT-FADS Metrics Catalog
 # ==============================================================================
 
 # Ingestion & Transactions
@@ -370,7 +369,7 @@ websocket_connections_active = _GLOBAL_REGISTRY.register(
 
 
 # ==============================================================================
-# Backlog Sampling Helpers (NFR-OBS-005)
+# Backlog Sampling Helpers
 # ==============================================================================
 
 async def sample_stream_backlog(
@@ -379,7 +378,7 @@ async def sample_stream_backlog(
     group_name: str,
 ) -> int:
     """
-    Computes stream backlog length from Redis consumer group information (NFR-OBS-005).
+    Computes stream backlog length from Redis consumer group information.
     Uses group lag (Redis 7+) or pending count summary.
     """
     try:

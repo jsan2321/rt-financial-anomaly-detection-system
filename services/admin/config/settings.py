@@ -132,7 +132,7 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# Telemetry & Observability (NFR-OBS-001)
+# Telemetry & Observability
 OTEL_EXPORTER_OTLP_ENDPOINT = os.getenv('OTEL_EXPORTER_OTLP_ENDPOINT', 'http://localhost:4317')
 OTEL_ENABLED = os.getenv('OTEL_ENABLED', 'true').lower() == 'true'
 

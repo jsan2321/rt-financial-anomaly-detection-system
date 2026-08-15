@@ -82,9 +82,9 @@ export const RiskChip: React.FC<RiskChipProps> = ({
         }}
       />
       <span>{styles.label}</span>
-      {score !== undefined && (
+      {score !== undefined && !isNaN(Number(score)) && (
         <span style={{ opacity: 0.85, fontWeight: 500 }}>
-          ({score.toFixed(2)})
+          ({Number(score).toFixed(2)})
         </span>
       )}
     </span>

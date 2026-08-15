@@ -24,7 +24,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       <StatCardsGrid alerts={alerts} />
 
       {/* Volume & Anomaly Throughput Chart */}
-      <VolumeChart />
+      <VolumeChart alerts={alerts} />
 
       {/* Recent Alerts Feed */}
       <div className="card" style={{ padding: 'var(--space-5)' }}>
@@ -55,6 +55,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           <AlertTable
             alerts={recentAlerts}
             onSelectAlert={onSelectAlert}
+            showPagination={false}
           />
         ) : (
           <p className="body-sm" style={{ color: 'var(--color-text-muted)', textAlign: 'center', padding: 'var(--space-4)' }}>

@@ -1,6 +1,5 @@
 """
 OpenTelemetry distributed tracing configuration, context propagation, and span helpers.
-Conforms to SRS §10 (NFR-OBS-001, NFR-OBS-002) and docs/architecture/observability.md.
 """
 
 from contextlib import contextmanager

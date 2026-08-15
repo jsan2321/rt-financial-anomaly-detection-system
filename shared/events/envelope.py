@@ -1,6 +1,5 @@
 """
 Standard Event Envelope for all Redis Streams messages in RT-FADS.
-Conforms to SRS §7.1 and docs/api/event-contracts.md.
 """
 
 from datetime import datetime, timezone

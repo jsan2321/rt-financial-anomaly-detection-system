@@ -121,7 +121,7 @@ export const AlertDetailPanel: React.FC<AlertDetailPanelProps> = ({
               Composite Risk Score
             </span>
             <span className="technical-data" style={{ fontSize: '18px', fontWeight: 700, color: 'var(--color-risk-critical)' }}>
-              {alert.composite_risk_score.toFixed(2)} / 1.00
+              {(Number(alert.composite_risk_score) || 0).toFixed(2)} / 1.00
             </span>
           </div>
 
@@ -130,30 +130,30 @@ export const AlertDetailPanel: React.FC<AlertDetailPanelProps> = ({
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--color-text-muted)' }}>
                 <span>Deterministic Rules (w=0.5)</span>
-                <span className="technical-data">{(alert.rule_severity_score || 0).toFixed(2)}</span>
+                <span className="technical-data">{(Number(alert.rule_severity_score) || 0).toFixed(2)}</span>
               </div>
               <div style={{ height: '4px', backgroundColor: 'var(--color-border)', borderRadius: '2px', overflow: 'hidden', marginTop: '2px' }}>
-                <div style={{ width: `${(alert.rule_severity_score || 0) * 100}%`, height: '100%', backgroundColor: 'var(--color-risk-high)' }} />
+                <div style={{ width: `${Math.min(100, Math.max(0, (Number(alert.rule_severity_score) || 0) * 100))}%`, height: '100%', backgroundColor: 'var(--color-risk-high)' }} />
               </div>
             </div>
 
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--color-text-muted)' }}>
                 <span>ML Isolation Forest (w=0.3)</span>
-                <span className="technical-data">{(alert.ml_anomaly_score || 0).toFixed(2)}</span>
+                <span className="technical-data">{(Number(alert.ml_anomaly_score) || 0).toFixed(2)}</span>
               </div>
               <div style={{ height: '4px', backgroundColor: 'var(--color-border)', borderRadius: '2px', overflow: 'hidden', marginTop: '2px' }}>
-                <div style={{ width: `${(alert.ml_anomaly_score || 0) * 100}%`, height: '100%', backgroundColor: 'var(--color-primary)' }} />
+                <div style={{ width: `${Math.min(100, Math.max(0, (Number(alert.ml_anomaly_score) || 0) * 100))}%`, height: '100%', backgroundColor: 'var(--color-primary)' }} />
               </div>
             </div>
 
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--color-text-muted)' }}>
                 <span>User Profile Risk (w=0.2)</span>
-                <span className="technical-data">{(alert.user_risk_score || 0).toFixed(2)}</span>
+                <span className="technical-data">{(Number(alert.user_risk_score) || 0).toFixed(2)}</span>
               </div>
               <div style={{ height: '4px', backgroundColor: 'var(--color-border)', borderRadius: '2px', overflow: 'hidden', marginTop: '2px' }}>
-                <div style={{ width: `${(alert.user_risk_score || 0) * 100}%`, height: '100%', backgroundColor: 'var(--color-info)' }} />
+                <div style={{ width: `${Math.min(100, Math.max(0, (Number(alert.user_risk_score) || 0) * 100))}%`, height: '100%', backgroundColor: 'var(--color-info)' }} />
               </div>
             </div>
           </div>

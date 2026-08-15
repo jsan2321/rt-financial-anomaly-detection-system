@@ -263,6 +263,10 @@ class DetectionPipeline:
                 if final_decision.should_alert:
                     alert_id = uuid.uuid4()
                     rule_matches_json = [m.model_dump(mode="json") for m in final_decision.rule_matches]
+                    risk_snapshot_json = {
+                        k: str(v) if isinstance(v, (uuid.UUID, Decimal)) else (v.isoformat() if isinstance(v, datetime) else v)
+                        for k, v in final_decision.risk_profile_snapshot.items()
+                    }
 
                     alert = Alert(
                         id=alert_id,
@@ -273,7 +277,7 @@ class DetectionPipeline:
                         composite_risk_score=final_decision.composite_risk_score,
                         ml_anomaly_score=final_decision.ml_anomaly_score,
                         rule_matches=rule_matches_json,
-                        risk_profile_snapshot=final_decision.risk_profile_snapshot,
+                        risk_profile_snapshot=risk_snapshot_json,
                         is_demo=final_decision.is_demo,
                         correlation_id=corr_uuid,
                         created_at=now,

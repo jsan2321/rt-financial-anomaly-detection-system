@@ -107,7 +107,27 @@ export const App: React.FC = () => {
       if (response && response.items && response.items.length > 0) {
         setAlerts((prev) => {
           const map = new Map(prev.map((a) => [a.id, a]));
-          for (const item of response.items) {
+          for (const rawItem of response.items) {
+            const item: Alert = {
+              id: rawItem.id,
+              transaction_id: rawItem.transaction_id,
+              status: rawItem.status,
+              severity: rawItem.severity,
+              composite_risk_score: Number(rawItem.composite_risk_score) || 0,
+              rule_severity_score: Number((rawItem as any).rule_severity_score) || 0,
+              ml_anomaly_score: Number((rawItem as any).ml_anomaly_score) || 0,
+              user_risk_score: Number((rawItem as any).user_risk_score) || 0,
+              matched_rules: (rawItem as any).matched_rules || [],
+              is_demo: Boolean(rawItem.is_demo),
+              resolved_by: (rawItem as any).resolved_by || null,
+              resolved_at: (rawItem as any).resolved_at || null,
+              resolution_reason: (rawItem as any).resolution_reason || null,
+              escalated_email_at: (rawItem as any).escalated_email_at || null,
+              escalated_slack_at: (rawItem as any).escalated_slack_at || null,
+              correlation_id: (rawItem as any).correlation_id || 'rest-sync',
+              created_at: rawItem.created_at || new Date().toISOString(),
+              updated_at: (rawItem as any).updated_at || rawItem.created_at || new Date().toISOString(),
+            };
             map.set(item.id, item);
           }
           return Array.from(map.values()).sort(
@@ -133,7 +153,7 @@ export const App: React.FC = () => {
         transaction_id: msg.alert.transaction_id,
         status: msg.alert.status,
         severity: msg.alert.severity,
-        composite_risk_score: msg.alert.composite_risk_score,
+        composite_risk_score: Number(msg.alert.composite_risk_score) || 0,
         rule_severity_score: 0.5,
         ml_anomaly_score: 0.5,
         user_risk_score: 0.2,
@@ -281,6 +301,45 @@ export const App: React.FC = () => {
     );
   };
 
+  // Alert selection with asynchronous detail fetching
+  const handleSelectAlert = useCallback(async (alert: Alert | null) => {
+    setSelectedAlert(alert);
+    if (alert && alert.id) {
+      try {
+        const fullDetail = await api.getAlertDetail(alert.id);
+        if (fullDetail) {
+          const ruleMatches: RuleMatch[] = ((fullDetail as any).rule_matches || []).map((m: any) => ({
+            rule_id: m.rule_id || m.id || 'rule-det',
+            rule_name: m.rule_name || m.name || 'Deterministic Fraud Rule',
+            severity: m.severity || 'HIGH',
+            explanation: m.explanation || 'Rule condition met.',
+          }));
+
+          let maxRuleScore = 0;
+          for (const m of ruleMatches) {
+            const s = m.severity === 'CRITICAL' ? 1.0 : m.severity === 'HIGH' ? 0.75 : m.severity === 'MEDIUM' ? 0.5 : 0.25;
+            if (s > maxRuleScore) maxRuleScore = s;
+          }
+
+          const userScore = Number((fullDetail as any).risk_profile_snapshot?.risk_score) || 0;
+
+          const detailedAlert: Alert = {
+            ...alert,
+            ...fullDetail,
+            composite_risk_score: Number(fullDetail.composite_risk_score) || 0,
+            ml_anomaly_score: Number(fullDetail.ml_anomaly_score) || 0,
+            rule_severity_score: maxRuleScore,
+            user_risk_score: userScore,
+            matched_rules: ruleMatches,
+          };
+          setSelectedAlert(detailedAlert);
+        }
+      } catch {
+        // Fallback to existing alert summary
+      }
+    }
+  }, []);
+
   const getPageTitle = () => {
     switch (currentTab) {
       case 'dashboard':
@@ -311,7 +370,7 @@ export const App: React.FC = () => {
         <DashboardPage
           alerts={alerts}
           onSelectAlert={(a) => {
-            setSelectedAlert(a);
+            handleSelectAlert(a);
             setCurrentTab('alerts');
           }}
           onNavigateToAlerts={() => setCurrentTab('alerts')}
@@ -321,7 +380,7 @@ export const App: React.FC = () => {
         <AlertsPage
           alerts={alerts}
           selectedAlert={selectedAlert}
-          onSelectAlert={setSelectedAlert}
+          onSelectAlert={handleSelectAlert}
           onApproveAlert={handleApproveAlert}
           onBlockAlert={handleBlockAlert}
           onFalsePositiveAlert={handleFalsePositiveAlert}

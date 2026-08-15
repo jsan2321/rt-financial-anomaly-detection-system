@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Alert } from '../../types';
 import { RiskChip } from '../common/RiskChip';
 import { DemoBadge } from '../common/DemoBadge';
@@ -7,13 +8,34 @@ interface AlertTableProps {
   alerts: Alert[];
   selectedAlertId?: string | null;
   onSelectAlert: (alert: Alert) => void;
+  showPagination?: boolean;
+  initialPageSize?: number;
 }
 
 export const AlertTable: React.FC<AlertTableProps> = ({
   alerts,
   selectedAlertId,
   onSelectAlert,
+  showPagination = true,
+  initialPageSize = 10,
 }) => {
+  const [pageSize, setPageSize] = useState<number>(initialPageSize);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+
+  const totalPages = Math.max(1, Math.ceil(alerts.length / pageSize));
+
+  // Ensure current page is valid when alerts or pageSize changes
+  const activePage = Math.min(currentPage, totalPages);
+
+  const displayedAlerts = useMemo(() => {
+    if (!showPagination) return alerts;
+    const startIdx = (activePage - 1) * pageSize;
+    return alerts.slice(startIdx, startIdx + pageSize);
+  }, [alerts, showPagination, activePage, pageSize]);
+
+  const startRecord = alerts.length === 0 ? 0 : (activePage - 1) * pageSize + 1;
+  const endRecord = Math.min(activePage * pageSize, alerts.length);
+
   const formatTime = (isoString: string) => {
     try {
       const date = new Date(isoString);
@@ -115,7 +137,7 @@ export const AlertTable: React.FC<AlertTableProps> = ({
           </tr>
         </thead>
         <tbody>
-          {alerts.map((alert) => {
+          {displayedAlerts.map((alert) => {
             const isSelected = selectedAlertId === alert.id;
             return (
               <tr
@@ -151,7 +173,7 @@ export const AlertTable: React.FC<AlertTableProps> = ({
                   {alert.transaction_id.substring(0, 8)}...
                 </td>
                 <td className="technical-data" style={{ padding: '6px 12px', fontWeight: 600 }}>
-                  {alert.composite_risk_score.toFixed(2)}
+                  {(Number(alert.composite_risk_score) || 0).toFixed(2)}
                 </td>
                 <td style={{ padding: '6px 12px' }}>{getStatusBadge(alert.status)}</td>
                 <td style={{ padding: '6px 12px' }}>
@@ -172,6 +194,94 @@ export const AlertTable: React.FC<AlertTableProps> = ({
           })}
         </tbody>
       </table>
+
+      {/* Pagination & Count Footer */}
+      {showPagination && alerts.length > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '10px 16px',
+            borderTop: '1px solid var(--color-border)',
+            backgroundColor: 'var(--color-surface-subtle)',
+            fontSize: '12px',
+            color: 'var(--color-text-secondary)',
+          }}
+        >
+          {/* Row count summary */}
+          <div>
+            Showing <span style={{ fontWeight: 600, color: 'var(--color-text)' }}>{startRecord}</span> to{' '}
+            <span style={{ fontWeight: 600, color: 'var(--color-text)' }}>{endRecord}</span> of{' '}
+            <span style={{ fontWeight: 600, color: 'var(--color-text)' }}>{alerts.length}</span> alerts
+          </div>
+
+          {/* Controls: Page size & Navigation */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span>Rows per page:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="input"
+                style={{
+                  padding: '2px 8px',
+                  fontSize: '12px',
+                  height: '28px',
+                  width: '64px',
+                }}
+              >
+                <option value={10}>10</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+              </select>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={activePage <= 1}
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                style={{
+                  padding: '4px 8px',
+                  height: '28px',
+                  fontSize: '11px',
+                  opacity: activePage <= 1 ? 0.5 : 1,
+                  cursor: activePage <= 1 ? 'not-allowed' : 'pointer',
+                }}
+              >
+                <ChevronLeft size={14} />
+                <span>Prev</span>
+              </button>
+
+              <span className="technical-data" style={{ fontSize: '11px', minWidth: '70px', textAlign: 'center' }}>
+                Page {activePage} of {totalPages}
+              </span>
+
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={activePage >= totalPages}
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                style={{
+                  padding: '4px 8px',
+                  height: '28px',
+                  fontSize: '11px',
+                  opacity: activePage >= totalPages ? 0.5 : 1,
+                  cursor: activePage >= totalPages ? 'not-allowed' : 'pointer',
+                }}
+              >
+                <span>Next</span>
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -116,7 +116,7 @@ def compute_detection_decision(
         if risk_profile
         else {
             "user_id": str(transaction.user_id),
-            "risk_score": "0.0000",
+            "risk_score": Decimal("0.0000"),
             "total_alerts": 0,
             "false_positive_count": 0,
         }

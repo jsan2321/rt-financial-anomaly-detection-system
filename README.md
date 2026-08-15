@@ -259,7 +259,7 @@ python services/admin/manage.py runserver 0.0.0.0:8001
 Stream continuous jittered financial transactions (normal & anomalous) into the running Gateway API:
 
 ```powershell
-python scripts/simulate_live.py --interval-min 2.0 --interval-max 4.0 --anomaly-ratio 0.10
+python scripts/simulate_live.py --interval-min 2.0 --interval-max 4.0 --anomalous-ratio 0.10
 # or: make simulate
 ```
 Press `Ctrl+C` anytime to display a live simulation summary report.

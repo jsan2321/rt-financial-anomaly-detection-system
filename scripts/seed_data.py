@@ -48,6 +48,81 @@ MERCHANT_CATEGORIES = [
 
 CURRENCIES = ["USD", "EUR", "GBP", "CAD"]
 
+DEFAULT_FRAUD_RULES: List[Dict[str, Any]] = [
+    {
+        "id": uuid.UUID("11111111-1111-1111-1111-111111111101"),
+        "name": "OFAC Embargoed / High Risk Countries",
+        "rule_type": "HIGH_RISK_COUNTRY",
+        "severity": "CRITICAL",
+        "enabled": True,
+        "parameters": '{"countries": ["RU", "KP", "IR", "SY", "MM"]}',
+    },
+    {
+        "id": uuid.UUID("11111111-1111-1111-1111-111111111102"),
+        "name": "Extreme Value Wire Transfer",
+        "rule_type": "AMOUNT_THRESHOLD",
+        "severity": "CRITICAL",
+        "enabled": True,
+        "parameters": '{"threshold": 30000.00, "operator": ">="}',
+    },
+    {
+        "id": uuid.UUID("11111111-1111-1111-1111-111111111103"),
+        "name": "High Value Transfer Threshold",
+        "rule_type": "AMOUNT_THRESHOLD",
+        "severity": "HIGH",
+        "enabled": True,
+        "parameters": '{"threshold": 10000.00, "operator": ">="}',
+    },
+    {
+        "id": uuid.UUID("11111111-1111-1111-1111-111111111104"),
+        "name": "High-Risk Merchant Monitoring",
+        "rule_type": "MERCHANT_CATEGORY",
+        "severity": "HIGH",
+        "enabled": True,
+        "parameters": '{"categories": ["cryptocurrency_exchange", "wire_transfer", "gambling"]}',
+    },
+    {
+        "id": uuid.UUID("11111111-1111-1111-1111-111111111105"),
+        "name": "Rapid Burst Velocity Window",
+        "rule_type": "VELOCITY",
+        "severity": "HIGH",
+        "enabled": True,
+        "parameters": '{"count_threshold": 5, "window_minutes": 10}',
+    },
+    {
+        "id": uuid.UUID("11111111-1111-1111-1111-111111111106"),
+        "name": "Moderate Amount Surveillance",
+        "rule_type": "AMOUNT_THRESHOLD",
+        "severity": "MEDIUM",
+        "enabled": True,
+        "parameters": '{"threshold": 5000.00, "operator": ">="}',
+    },
+    {
+        "id": uuid.UUID("11111111-1111-1111-1111-111111111107"),
+        "name": "Digital Services / Electronics Burst",
+        "rule_type": "MERCHANT_CATEGORY",
+        "severity": "MEDIUM",
+        "enabled": True,
+        "parameters": '{"categories": ["digital_services", "electronics"]}',
+    },
+    {
+        "id": uuid.UUID("11111111-1111-1111-1111-111111111108"),
+        "name": "Elevated User Risk Profile Sentinel",
+        "rule_type": "USER_RISK_LEVEL",
+        "severity": "LOW",
+        "enabled": True,
+        "parameters": '{"min_risk_score": 0.35}',
+    },
+    {
+        "id": uuid.UUID("11111111-1111-1111-1111-111111111109"),
+        "name": "Minor Foreign Currency Transfer Notice",
+        "rule_type": "AMOUNT_THRESHOLD",
+        "severity": "LOW",
+        "enabled": True,
+        "parameters": '{"threshold": 1000.00, "operator": ">="}',
+    },
+]
+
 
 def build_db_url(cli_url: Optional[str] = None) -> str:
     """Resolves asyncpg database connection URL from CLI or environment."""
@@ -356,7 +431,19 @@ async def run_seed(
                     {**t, "metadata": '{"seed_origin": "historical_batch"}'},
                 )
 
-            # 6. Record seed run marker
+            # 6. Insert Default Fraud Rules across all severity tiers
+            logger.info(f"Inserting {len(DEFAULT_FRAUD_RULES)} default fraud rules into 'fraud_rules' table...")
+            for r in DEFAULT_FRAUD_RULES:
+                await conn.execute(
+                    text("""
+                        INSERT INTO fraud_rules (id, name, rule_type, severity, enabled, parameters, created_at, updated_at)
+                        VALUES (:id, :name, :rule_type, :severity, :enabled, CAST(:parameters AS jsonb), NOW(), NOW())
+                        ON CONFLICT (id) DO NOTHING;
+                    """),
+                    r,
+                )
+
+            # 7. Record seed run marker
             await record_seed_run(conn, len(users), len(txns), len(demo_payloads))
 
         # 7. Submit Demo Transactions to Gateway
